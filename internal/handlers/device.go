@@ -3,6 +3,7 @@ package handlers
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/chikenduhillary/ambiant-air-monitor-api/internal/aqi"
@@ -122,4 +123,45 @@ func (h *Handler) GetDeviceHourlyReadings(w http.ResponseWriter, r *http.Request
 		readings = append(readings, s)
 	}
 	writeJSON(w, http.StatusOK, readings)
+}
+
+// GetDeviceDailyReadings is GetDeviceCurrentReading's counterpart for daily
+// aggregates. Symptom counts aren't included (symptom_logs belongs to a
+// user, not a device, which isn't known here) — always 0.
+func (h *Handler) GetDeviceDailyReadings(w http.ResponseWriter, r *http.Request) {
+	deviceID, _ := r.Context().Value(middleware.DeviceIDKey).(int64)
+	days, _ := strconv.Atoi(r.URL.Query().Get("days"))
+	if days <= 0 || days > 90 {
+		days = 30
+	}
+
+	rows, err := h.db.QueryContext(r.Context(), `
+		SELECT
+			DATE(timestamp AT TIME ZONE 'UTC')   AS day,
+			ROUND(AVG(pm25)::numeric, 1)         AS avg_pm25,
+			ROUND(AVG(voc)::numeric,  0)         AS avg_voc,
+			ROUND(AVG(aqi)::numeric,  0)::int    AS avg_aqi,
+			0                                     AS symptoms
+		FROM sensor_readings
+		WHERE device_id = $1 AND timestamp >= NOW() - ($2::int || ' days')::interval
+		GROUP BY DATE(timestamp AT TIME ZONE 'UTC')
+		ORDER BY day ASC
+	`, deviceID, days)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	result := []models.DailyAggregate{}
+	for rows.Next() {
+		var d models.DailyAggregate
+		var date time.Time
+		if err := rows.Scan(&date, &d.PM25, &d.VOC, &d.AQI, &d.Symptoms); err != nil {
+			continue
+		}
+		d.Date = date.UTC().Format("2006-01-02")
+		result = append(result, d)
+	}
+	writeJSON(w, http.StatusOK, result)
 }
