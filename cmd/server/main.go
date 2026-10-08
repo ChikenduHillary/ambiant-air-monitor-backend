@@ -159,7 +159,7 @@ func main() {
 		Handler: cors.New(cors.Options{
 			AllowedOrigins:   allowedOrigins,
 			AllowedMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
-			AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type"},
+			AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-Device-Key"},
 			AllowCredentials: true,
 		}).Handler(r),
 		ReadTimeout:  15 * time.Second,
