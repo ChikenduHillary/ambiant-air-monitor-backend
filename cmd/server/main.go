@@ -70,6 +70,8 @@ func main() {
 		r.Group(func(r chi.Router) {
 			r.Use(authmw.DeviceAuth(database))
 			r.Post("/devices/readings", h.IngestReadings)
+			r.Get("/devices/readings/current", h.GetDeviceCurrentReading)
+			r.Get("/devices/readings/hourly", h.GetDeviceHourlyReadings)
 		})
 
 		// Device management (create/list/revoke) — a user JWT, not a device key.

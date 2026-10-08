@@ -7,6 +7,7 @@ import (
 
 	"github.com/chikenduhillary/ambiant-air-monitor-api/internal/aqi"
 	"github.com/chikenduhillary/ambiant-air-monitor-api/internal/middleware"
+	"github.com/chikenduhillary/ambiant-air-monitor-api/internal/models"
 )
 
 type deviceReading struct {
@@ -74,4 +75,51 @@ func (h *Handler) IngestReadings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusCreated, map[string]any{"success": true, "inserted": inserted})
+}
+
+// GetDeviceCurrentReading returns the latest reading for whichever device the
+// X-Device-Key belongs to — authenticated by the device's own key rather than
+// a user's login, so anyone holding that key (e.g. a team testing one shared
+// unit) can view its data without needing an account on it.
+func (h *Handler) GetDeviceCurrentReading(w http.ResponseWriter, r *http.Request) {
+	deviceID, _ := r.Context().Value(middleware.DeviceIDKey).(int64)
+
+	var s models.SensorReading
+	err := h.db.QueryRowContext(r.Context(), `
+		SELECT id, timestamp, pm25, voc, temperature, humidity, aqi
+		FROM sensor_readings WHERE device_id = $1 ORDER BY timestamp DESC LIMIT 1
+	`, deviceID).Scan(&s.ID, &s.Timestamp, &s.PM25, &s.VOC, &s.Temperature, &s.Humidity, &s.AQI)
+	if err != nil {
+		http.Error(w, "no readings available", http.StatusNotFound)
+		return
+	}
+	writeJSON(w, http.StatusOK, s)
+}
+
+// GetDeviceHourlyReadings is GetDeviceCurrentReading's counterpart for the
+// last 60 minutes of readings from the same device-key-authenticated device.
+func (h *Handler) GetDeviceHourlyReadings(w http.ResponseWriter, r *http.Request) {
+	deviceID, _ := r.Context().Value(middleware.DeviceIDKey).(int64)
+
+	rows, err := h.db.QueryContext(r.Context(), `
+		SELECT id, timestamp, pm25, voc, temperature, humidity, aqi
+		FROM sensor_readings
+		WHERE device_id = $1 AND timestamp >= NOW() - INTERVAL '60 minutes'
+		ORDER BY timestamp ASC
+	`, deviceID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	readings := []models.SensorReading{}
+	for rows.Next() {
+		var s models.SensorReading
+		if err := rows.Scan(&s.ID, &s.Timestamp, &s.PM25, &s.VOC, &s.Temperature, &s.Humidity, &s.AQI); err != nil {
+			continue
+		}
+		readings = append(readings, s)
+	}
+	writeJSON(w, http.StatusOK, readings)
 }
