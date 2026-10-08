@@ -143,9 +143,10 @@ func (h *Handler) GoogleCallback(w http.ResponseWriter, r *http.Request) {
 }
 
 type googleUserInfo struct {
-	Sub   string `json:"sub"`
-	Name  string `json:"name"`
-	Email string `json:"email"`
+	Sub     string `json:"sub"`
+	Name    string `json:"name"`
+	Email   string `json:"email"`
+	Picture string `json:"picture"`
 }
 
 func fetchGoogleUser(accessToken string) (*googleUserInfo, error) {
@@ -161,6 +162,10 @@ func fetchGoogleUser(accessToken string) (*googleUserInfo, error) {
 func (h *Handler) upsertGoogleUser(ctx context.Context, g *googleUserInfo) (int64, error) {
 	var id int64
 	if err := h.db.QueryRowContext(ctx, `SELECT id FROM users WHERE email = $1`, g.Email).Scan(&id); err == nil {
+		// Keep the avatar fresh in case the user's Google photo changed.
+		if g.Picture != "" {
+			h.db.ExecContext(ctx, `UPDATE users SET avatar_url = $1 WHERE id = $2`, g.Picture, id)
+		}
 		return id, nil
 	}
 
@@ -171,11 +176,16 @@ func (h *Handler) upsertGoogleUser(ctx context.Context, g *googleUserInfo) (int6
 		role = "admin"
 	}
 
+	var avatarURL *string
+	if g.Picture != "" {
+		avatarURL = &g.Picture
+	}
+
 	patientID := fmt.Sprintf("#%04d", time.Now().UnixNano()%10000)
 	err := h.db.QueryRowContext(ctx, `
-		INSERT INTO users (name, email, password_hash, condition, patient_id, threshold, role)
-		VALUES ($1, $2, '', 'Asthma', $3, 75, $4)
+		INSERT INTO users (name, email, password_hash, condition, patient_id, threshold, role, avatar_url)
+		VALUES ($1, $2, '', 'Asthma', $3, 75, $4, $5)
 		RETURNING id
-	`, g.Name, g.Email, patientID, role).Scan(&id)
+	`, g.Name, g.Email, patientID, role, avatarURL).Scan(&id)
 	return id, err
 }

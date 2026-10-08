@@ -105,9 +105,9 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	var user models.AuthUser
 	var hash string
 	err := h.db.QueryRowContext(r.Context(), `
-		SELECT id, name, email, password_hash, condition, patient_id, threshold, role
+		SELECT id, name, email, password_hash, condition, patient_id, threshold, role, avatar_url
 		FROM users WHERE email = $1
-	`, req.Email).Scan(&user.ID, &user.Name, &user.Email, &hash, &user.Condition, &user.PatientID, &user.Threshold, &user.Role)
+	`, req.Email).Scan(&user.ID, &user.Name, &user.Email, &hash, &user.Condition, &user.PatientID, &user.Threshold, &user.Role, &user.AvatarURL)
 	if err != nil {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid email or password"})
 		return
@@ -133,9 +133,9 @@ func (h *Handler) Me(w http.ResponseWriter, r *http.Request) {
 
 	var user models.AuthUser
 	err := h.db.QueryRowContext(r.Context(), `
-		SELECT id, name, email, condition, patient_id, threshold, role
+		SELECT id, name, email, condition, patient_id, threshold, role, avatar_url
 		FROM users WHERE id = $1
-	`, id).Scan(&user.ID, &user.Name, &user.Email, &user.Condition, &user.PatientID, &user.Threshold, &user.Role)
+	`, id).Scan(&user.ID, &user.Name, &user.Email, &user.Condition, &user.PatientID, &user.Threshold, &user.Role, &user.AvatarURL)
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "user not found"})
 		return

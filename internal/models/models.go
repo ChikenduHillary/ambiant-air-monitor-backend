@@ -38,13 +38,14 @@ type SymptomLog struct {
 }
 
 type AuthUser struct {
-	ID        int64  `json:"id"`
-	Name      string `json:"name"`
-	Email     string `json:"email"`
-	Condition string `json:"condition"`
-	PatientID string `json:"patient_id"`
-	Threshold int    `json:"threshold"`
-	Role      string `json:"role"`
+	ID        int64   `json:"id"`
+	Name      string  `json:"name"`
+	Email     string  `json:"email"`
+	Condition string  `json:"condition"`
+	PatientID string  `json:"patient_id"`
+	Threshold int     `json:"threshold"`
+	Role      string  `json:"role"`
+	AvatarURL *string `json:"avatar_url"`
 }
 
 // ── Admin types ───────────────────────────────────────────────────────────────

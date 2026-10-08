@@ -78,6 +78,8 @@ func Migrate(db *sql.DB) error {
 			last_seen_at TIMESTAMPTZ
 		);
 
+		ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url TEXT;
+
 		ALTER TABLE sensor_readings ADD COLUMN IF NOT EXISTS user_id   BIGINT REFERENCES users(id)   ON DELETE CASCADE;
 		ALTER TABLE sensor_readings ADD COLUMN IF NOT EXISTS device_id BIGINT REFERENCES devices(id) ON DELETE SET NULL;
 		ALTER TABLE alerts          ADD COLUMN IF NOT EXISTS user_id   BIGINT REFERENCES users(id)   ON DELETE CASCADE;
