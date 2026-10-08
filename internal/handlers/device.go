@@ -125,6 +125,18 @@ func (h *Handler) GetDeviceHourlyReadings(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, readings)
 }
 
+// GetDeviceTodayPeak is GetDeviceCurrentReading's counterpart for the
+// highest AQI recorded since midnight UTC.
+func (h *Handler) GetDeviceTodayPeak(w http.ResponseWriter, r *http.Request) {
+	deviceID, _ := r.Context().Value(middleware.DeviceIDKey).(int64)
+	var peak int
+	h.db.QueryRowContext(r.Context(), `
+		SELECT COALESCE(MAX(aqi), 0) FROM sensor_readings
+		WHERE device_id = $1 AND timestamp >= date_trunc('day', NOW())
+	`, deviceID).Scan(&peak)
+	writeJSON(w, http.StatusOK, map[string]int{"peak_aqi": peak})
+}
+
 // GetDeviceDailyReadings is GetDeviceCurrentReading's counterpart for daily
 // aggregates. Symptom counts aren't included (symptom_logs belongs to a
 // user, not a device, which isn't known here) — always 0.

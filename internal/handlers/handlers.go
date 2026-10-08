@@ -81,6 +81,18 @@ func (h *Handler) GetCurrentReading(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s)
 }
 
+// GetTodayPeak returns the highest AQI recorded since midnight UTC — a true
+// daily maximum, not just whatever the current reading happens to be.
+func (h *Handler) GetTodayPeak(w http.ResponseWriter, r *http.Request) {
+	userID := currentUserID(r)
+	var peak int
+	h.db.QueryRowContext(r.Context(), `
+		SELECT COALESCE(MAX(aqi), 0) FROM sensor_readings
+		WHERE user_id = $1 AND timestamp >= date_trunc('day', NOW())
+	`, userID).Scan(&peak)
+	writeJSON(w, http.StatusOK, map[string]int{"peak_aqi": peak})
+}
+
 func (h *Handler) GetHourlyReadings(w http.ResponseWriter, r *http.Request) {
 	userID := currentUserID(r)
 	rows, err := h.db.QueryContext(r.Context(), `

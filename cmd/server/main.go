@@ -73,6 +73,7 @@ func main() {
 			r.Get("/devices/readings/current", h.GetDeviceCurrentReading)
 			r.Get("/devices/readings/hourly", h.GetDeviceHourlyReadings)
 			r.Get("/devices/readings/daily", h.GetDeviceDailyReadings)
+			r.Get("/devices/readings/today-peak", h.GetDeviceTodayPeak)
 		})
 
 		// Device management (create/list/revoke) — a user JWT, not a device key.
@@ -132,6 +133,7 @@ func main() {
 				r.Get("/current", h.GetCurrentReading)
 				r.Get("/hourly", h.GetHourlyReadings)
 				r.Get("/daily", h.GetDailyReadings)
+				r.Get("/today-peak", h.GetTodayPeak)
 			})
 
 			r.Route("/alerts", func(r chi.Router) {
