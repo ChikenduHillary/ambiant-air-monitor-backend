@@ -26,7 +26,6 @@ func main() {
 	addr         := envOr("ADDR", ":8080")
 	frontendURL  := envOr("FRONTEND_URL", "http://localhost:3000")
 	jwtSecret    := []byte(envOr("JWT_SECRET", "dev-secret-change-in-production"))
-	deviceAPIKey := os.Getenv("DEVICE_API_KEY")
 	googleCfg    := handlers.Config{
 		JWTSecret:          jwtSecret,
 		GoogleClientID:     os.Getenv("GOOGLE_CLIENT_ID"),
@@ -67,10 +66,20 @@ func main() {
 		r.Get("/health", h.Health)
 
 		// Field devices (e.g. the AAQPHM firmware) push readings here using
-		// a shared API key instead of a user JWT.
+		// their own per-device key instead of a user JWT.
 		r.Group(func(r chi.Router) {
-			r.Use(authmw.DeviceAuth(deviceAPIKey))
+			r.Use(authmw.DeviceAuth(database))
 			r.Post("/devices/readings", h.IngestReadings)
+		})
+
+		// Device management (create/list/revoke) — a user JWT, not a device key.
+		r.Group(func(r chi.Router) {
+			r.Use(protect)
+			r.Route("/devices", func(r chi.Router) {
+				r.Get("/", h.ListDevices)
+				r.Post("/", h.CreateDevice)
+				r.Delete("/{id}", h.DeleteDevice)
+			})
 		})
 
 		r.Route("/auth", func(r chi.Router) {

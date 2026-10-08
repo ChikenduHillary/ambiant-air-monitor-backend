@@ -65,6 +65,27 @@ func Migrate(db *sql.DB) error {
 			notes      TEXT        NOT NULL DEFAULT '',
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		);
+
+		-- One row per physical field device, owned by one user. key_hash is the
+		-- SHA-256 hex digest of the device's X-Device-Key — the plaintext key is
+		-- shown once at creation time (CreateDevice) and never stored.
+		CREATE TABLE IF NOT EXISTS devices (
+			id           BIGSERIAL PRIMARY KEY,
+			user_id      BIGINT      NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			name         TEXT        NOT NULL,
+			key_hash     TEXT        NOT NULL UNIQUE,
+			created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			last_seen_at TIMESTAMPTZ
+		);
+
+		ALTER TABLE sensor_readings ADD COLUMN IF NOT EXISTS user_id   BIGINT REFERENCES users(id)   ON DELETE CASCADE;
+		ALTER TABLE sensor_readings ADD COLUMN IF NOT EXISTS device_id BIGINT REFERENCES devices(id) ON DELETE SET NULL;
+		ALTER TABLE alerts          ADD COLUMN IF NOT EXISTS user_id   BIGINT REFERENCES users(id)   ON DELETE CASCADE;
+		ALTER TABLE alerts          ADD COLUMN IF NOT EXISTS device_id BIGINT REFERENCES devices(id) ON DELETE SET NULL;
+
+		CREATE INDEX IF NOT EXISTS idx_devices_user_id        ON devices (user_id);
+		CREATE INDEX IF NOT EXISTS idx_sensor_readings_user_id ON sensor_readings (user_id);
+		CREATE INDEX IF NOT EXISTS idx_alerts_user_id          ON alerts (user_id);
 	`)
 	return err
 }

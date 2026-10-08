@@ -43,30 +43,29 @@ CREATE TABLE IF NOT EXISTS symptom_logs (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- One row per physical field device, owned by one user. key_hash is the
+-- SHA-256 hex digest of the device's X-Device-Key — the plaintext key is
+-- shown once at creation time (CreateDevice) and never stored.
+CREATE TABLE IF NOT EXISTS devices (
+    id           BIGSERIAL PRIMARY KEY,
+    user_id      BIGINT      NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name         TEXT        NOT NULL,
+    key_hash     TEXT        NOT NULL UNIQUE,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_seen_at TIMESTAMPTZ
+);
+
+ALTER TABLE sensor_readings ADD COLUMN IF NOT EXISTS user_id   BIGINT REFERENCES users(id)   ON DELETE CASCADE;
+ALTER TABLE sensor_readings ADD COLUMN IF NOT EXISTS device_id BIGINT REFERENCES devices(id) ON DELETE SET NULL;
+ALTER TABLE alerts          ADD COLUMN IF NOT EXISTS user_id   BIGINT REFERENCES users(id)   ON DELETE CASCADE;
+ALTER TABLE alerts          ADD COLUMN IF NOT EXISTS device_id BIGINT REFERENCES devices(id) ON DELETE SET NULL;
+
 -- ── Indexes ──────────────────────────────────────────────────────────────────
 
 CREATE INDEX IF NOT EXISTS idx_sensor_readings_timestamp ON sensor_readings (timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_sensor_readings_user_id   ON sensor_readings (user_id);
 CREATE INDEX IF NOT EXISTS idx_alerts_created_at        ON alerts (created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_alerts_user_id           ON alerts (user_id);
 CREATE INDEX IF NOT EXISTS idx_symptom_logs_user_id     ON symptom_logs (user_id);
 CREATE INDEX IF NOT EXISTS idx_symptom_logs_created_at  ON symptom_logs (created_at DESC);
-
--- ── Daily aggregate view ──────────────────────────────────────────────────────
--- Used by GET /api/v1/sensors/daily
-
-CREATE OR REPLACE VIEW daily_aggregates AS
-SELECT
-    DATE(sr.timestamp AT TIME ZONE 'UTC') AS date,
-    ROUND(AVG(sr.pm25)::NUMERIC, 1)       AS pm25,
-    ROUND(AVG(sr.voc)::NUMERIC,  0)       AS voc,
-    ROUND(AVG(sr.aqi)::NUMERIC,  0)::INT  AS aqi,
-    COALESCE(s.symptoms, 0)               AS symptoms
-FROM sensor_readings sr
-LEFT JOIN (
-    SELECT
-        DATE(created_at AT TIME ZONE 'UTC') AS date,
-        COUNT(*)                            AS symptoms
-    FROM symptom_logs
-    GROUP BY DATE(created_at AT TIME ZONE 'UTC')
-) s ON s.date = DATE(sr.timestamp AT TIME ZONE 'UTC')
-GROUP BY DATE(sr.timestamp AT TIME ZONE 'UTC'), s.symptoms
-ORDER BY date ASC;
+CREATE INDEX IF NOT EXISTS idx_devices_user_id          ON devices (user_id);

@@ -10,6 +10,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/chikenduhillary/ambiant-air-monitor-api/internal/middleware"
 	"github.com/chikenduhillary/ambiant-air-monitor-api/internal/models"
 )
 
@@ -49,6 +50,12 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	json.NewEncoder(w).Encode(v)
 }
 
+func currentUserID(r *http.Request) int64 {
+	idStr, _ := r.Context().Value(middleware.UserIDKey).(string)
+	id, _ := strconv.ParseInt(idStr, 10, 64)
+	return id
+}
+
 // ── health ───────────────────────────────────────────────────────────────────
 
 func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
@@ -61,11 +68,12 @@ func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
 // ── sensors ──────────────────────────────────────────────────────────────────
 
 func (h *Handler) GetCurrentReading(w http.ResponseWriter, r *http.Request) {
+	userID := currentUserID(r)
 	var s models.SensorReading
 	err := h.db.QueryRowContext(r.Context(), `
 		SELECT id, timestamp, pm25, voc, temperature, humidity, aqi
-		FROM sensor_readings ORDER BY timestamp DESC LIMIT 1
-	`).Scan(&s.ID, &s.Timestamp, &s.PM25, &s.VOC, &s.Temperature, &s.Humidity, &s.AQI)
+		FROM sensor_readings WHERE user_id = $1 ORDER BY timestamp DESC LIMIT 1
+	`, userID).Scan(&s.ID, &s.Timestamp, &s.PM25, &s.VOC, &s.Temperature, &s.Humidity, &s.AQI)
 	if err != nil {
 		http.Error(w, "no readings available", http.StatusNotFound)
 		return
@@ -74,12 +82,13 @@ func (h *Handler) GetCurrentReading(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) GetHourlyReadings(w http.ResponseWriter, r *http.Request) {
+	userID := currentUserID(r)
 	rows, err := h.db.QueryContext(r.Context(), `
 		SELECT id, timestamp, pm25, voc, temperature, humidity, aqi
 		FROM sensor_readings
-		WHERE timestamp >= NOW() - INTERVAL '60 minutes'
+		WHERE user_id = $1 AND timestamp >= NOW() - INTERVAL '60 minutes'
 		ORDER BY timestamp ASC
-	`)
+	`, userID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -102,33 +111,28 @@ func (h *Handler) GetDailyReadings(w http.ResponseWriter, r *http.Request) {
 	if days <= 0 || days > 90 {
 		days = 30
 	}
+	userID := currentUserID(r)
 
-	// Use the daily_aggregates view (created by supabase_schema.sql).
-	// Falls back to inline query if view is not available.
 	rows, err := h.db.QueryContext(r.Context(), `
-		SELECT date, pm25, voc, aqi, symptoms
-		FROM daily_aggregates
-		WHERE date >= (NOW() - ($1::int || ' days')::interval)::date
-		ORDER BY date ASC
-	`, days)
+		SELECT
+			DATE(sr.timestamp AT TIME ZONE 'UTC')   AS day,
+			ROUND(AVG(sr.pm25)::numeric, 1)         AS avg_pm25,
+			ROUND(AVG(sr.voc)::numeric,  0)         AS avg_voc,
+			ROUND(AVG(sr.aqi)::numeric,  0)::int    AS avg_aqi,
+			COALESCE(sc.symptoms, 0)                AS symptoms
+		FROM sensor_readings sr
+		LEFT JOIN (
+			SELECT DATE(created_at AT TIME ZONE 'UTC') AS day, COUNT(*) AS symptoms
+			FROM symptom_logs WHERE user_id = $1
+			GROUP BY DATE(created_at AT TIME ZONE 'UTC')
+		) sc ON sc.day = DATE(sr.timestamp AT TIME ZONE 'UTC')
+		WHERE sr.user_id = $1 AND sr.timestamp >= NOW() - ($2::int || ' days')::interval
+		GROUP BY DATE(sr.timestamp AT TIME ZONE 'UTC'), sc.symptoms
+		ORDER BY day ASC
+	`, userID, days)
 	if err != nil {
-		// Fallback: inline aggregation without symptom join
-		rows, err = h.db.QueryContext(r.Context(), `
-			SELECT
-				DATE(timestamp AT TIME ZONE 'UTC')       AS day,
-				ROUND(AVG(pm25)::numeric, 1)             AS avg_pm25,
-				ROUND(AVG(voc)::numeric,  0)             AS avg_voc,
-				ROUND(AVG(aqi)::numeric,  0)::int        AS avg_aqi,
-				0                                        AS symptoms
-			FROM sensor_readings
-			WHERE timestamp >= NOW() - ($1::int || ' days')::interval
-			GROUP BY day
-			ORDER BY day ASC
-		`, days)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
 	defer rows.Close()
 
@@ -148,17 +152,21 @@ func (h *Handler) GetDailyReadings(w http.ResponseWriter, r *http.Request) {
 // ── alerts ───────────────────────────────────────────────────────────────────
 
 func (h *Handler) ListAlerts(w http.ResponseWriter, r *http.Request) {
+	userID := currentUserID(r)
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	if limit <= 0 || limit > 100 {
 		limit = 20
 	}
 
+	// device_id IS NULL rows are admin broadcasts — visible to everyone;
+	// the rest are only visible to the user whose device raised them.
 	rows, err := h.db.QueryContext(r.Context(), `
 		SELECT id, message, level, read, created_at
 		FROM alerts
+		WHERE user_id IS NULL OR user_id = $1
 		ORDER BY created_at DESC
-		LIMIT $1
-	`, limit)
+		LIMIT $2
+	`, userID, limit)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -177,8 +185,13 @@ func (h *Handler) ListAlerts(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) MarkAlertRead(w http.ResponseWriter, r *http.Request) {
+	userID := currentUserID(r)
 	id := chi.URLParam(r, "id")
-	if _, err := h.db.ExecContext(r.Context(), `UPDATE alerts SET read = TRUE WHERE id = $1`, id); err != nil {
+	_, err := h.db.ExecContext(r.Context(), `
+		UPDATE alerts SET read = TRUE
+		WHERE id = $1 AND (user_id IS NULL OR user_id = $2)
+	`, id, userID)
+	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -188,12 +201,14 @@ func (h *Handler) MarkAlertRead(w http.ResponseWriter, r *http.Request) {
 // ── symptoms ─────────────────────────────────────────────────────────────────
 
 func (h *Handler) ListSymptoms(w http.ResponseWriter, r *http.Request) {
+	userID := currentUserID(r)
 	rows, err := h.db.QueryContext(r.Context(), `
 		SELECT id, symptoms, severity, triggers, notes, created_at
 		FROM symptom_logs
+		WHERE user_id = $1
 		ORDER BY created_at DESC
 		LIMIT 50
-	`)
+	`, userID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -247,13 +262,14 @@ func (h *Handler) CreateSymptom(w http.ResponseWriter, r *http.Request) {
 	sympJSON, _ := json.Marshal(req.Symptoms)
 	trigJSON, _ := json.Marshal(req.Triggers)
 	now := time.Now().UTC()
+	userID := currentUserID(r)
 
 	var id int64
 	err := h.db.QueryRowContext(r.Context(), `
-		INSERT INTO symptom_logs (symptoms, severity, triggers, notes, created_at)
-		VALUES ($1, $2, $3, $4, $5)
+		INSERT INTO symptom_logs (user_id, symptoms, severity, triggers, notes, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6)
 		RETURNING id
-	`, sympJSON, req.Severity, trigJSON, req.Notes, now).Scan(&id)
+	`, userID, sympJSON, req.Severity, trigJSON, req.Notes, now).Scan(&id)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -270,13 +286,14 @@ func (h *Handler) CreateSymptom(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) GetSymptom(w http.ResponseWriter, r *http.Request) {
+	userID := currentUserID(r)
 	id := chi.URLParam(r, "id")
 	var s models.SymptomLog
 	var sympJSON, trigJSON []byte
 	err := h.db.QueryRowContext(r.Context(), `
 		SELECT id, symptoms, severity, triggers, notes, created_at
-		FROM symptom_logs WHERE id = $1
-	`, id).Scan(&s.ID, &sympJSON, &s.Severity, &trigJSON, &s.Notes, &s.CreatedAt)
+		FROM symptom_logs WHERE id = $1 AND user_id = $2
+	`, id, userID).Scan(&s.ID, &sympJSON, &s.Severity, &trigJSON, &s.Notes, &s.CreatedAt)
 	if err != nil {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
