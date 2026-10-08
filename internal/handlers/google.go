@@ -13,7 +13,6 @@ import (
 	"golang.org/x/oauth2/google"
 )
 
-// googleOAuthConfig is built lazily from env vars on first call.
 func (h *Handler) googleOAuthConfig() *oauth2.Config {
 	return &oauth2.Config{
 		ClientID:     h.googleClientID,
@@ -24,36 +23,83 @@ func (h *Handler) googleOAuthConfig() *oauth2.Config {
 	}
 }
 
-// GoogleLogin redirects the user to Google's OAuth consent page.
+// oauthState is JSON-encoded then base64-encoded into the OAuth state param.
+// This lets us carry the mobile app_redirect through the Google OAuth round-trip
+// without needing a separate cookie.
+type oauthState struct {
+	CSRF        string `json:"c"`
+	AppRedirect string `json:"r,omitempty"` // non-empty for mobile clients
+}
+
+func buildState(appRedirect string) (string, error) {
+	b := make([]byte, 12)
+	rand.Read(b)
+	s := oauthState{
+		CSRF:        base64.RawURLEncoding.EncodeToString(b),
+		AppRedirect: appRedirect,
+	}
+	data, err := json.Marshal(s)
+	if err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(data), nil
+}
+
+func parseState(raw string) (*oauthState, error) {
+	data, err := base64.RawURLEncoding.DecodeString(raw)
+	if err != nil {
+		return nil, err
+	}
+	var s oauthState
+	return &s, json.Unmarshal(data, &s)
+}
+
+// GoogleLogin redirects to Google's OAuth consent page.
+// Optional query param: app_redirect — the URI the mobile app wants the token delivered to.
 func (h *Handler) GoogleLogin(w http.ResponseWriter, r *http.Request) {
 	if h.googleClientID == "" || h.googleClientSecret == "" {
 		http.Error(w, "Google OAuth not configured — set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET", http.StatusNotImplemented)
 		return
 	}
 
-	state := randomState()
+	appRedirect := r.URL.Query().Get("app_redirect")
+	stateStr, err := buildState(appRedirect)
+	if err != nil {
+		http.Error(w, "state error", http.StatusInternalServerError)
+		return
+	}
+
+	// Store the CSRF portion in a cookie for validation in the callback.
+	parsed, _ := parseState(stateStr)
 	http.SetCookie(w, &http.Cookie{
-		Name:     "oauth_state",
-		Value:    state,
+		Name:     "oauth_csrf",
+		Value:    parsed.CSRF,
 		Path:     "/",
 		MaxAge:   600,
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
 	})
 
-	url := h.googleOAuthConfig().AuthCodeURL(state, oauth2.AccessTypeOnline)
+	url := h.googleOAuthConfig().AuthCodeURL(stateStr, oauth2.AccessTypeOnline)
 	http.Redirect(w, r, url, http.StatusTemporaryRedirect)
 }
 
-// GoogleCallback handles the OAuth callback from Google.
+// GoogleCallback handles the redirect from Google after user consent.
 func (h *Handler) GoogleCallback(w http.ResponseWriter, r *http.Request) {
-	// Validate state
-	stateCookie, err := r.Cookie("oauth_state")
-	if err != nil || stateCookie.Value != r.URL.Query().Get("state") {
+	stateStr := r.URL.Query().Get("state")
+	state, err := parseState(stateStr)
+	if err != nil {
+		http.Error(w, "invalid state", http.StatusBadRequest)
+		return
+	}
+
+	// Validate CSRF
+	csrfCookie, err := r.Cookie("oauth_csrf")
+	if err != nil || csrfCookie.Value != state.CSRF {
 		http.Error(w, "invalid OAuth state", http.StatusBadRequest)
 		return
 	}
-	http.SetCookie(w, &http.Cookie{Name: "oauth_state", MaxAge: -1, Path: "/"})
+	http.SetCookie(w, &http.Cookie{Name: "oauth_csrf", MaxAge: -1, Path: "/"})
 
 	code := r.URL.Query().Get("code")
 	if code == "" {
@@ -73,7 +119,6 @@ func (h *Handler) GoogleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Upsert user: find by email or create new
 	userID, err := h.upsertGoogleUser(r.Context(), gUser)
 	if err != nil {
 		http.Error(w, "failed to upsert user: "+err.Error(), http.StatusInternalServerError)
@@ -86,9 +131,15 @@ func (h *Handler) GoogleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Redirect to frontend with token as query param; frontend stores it.
-	frontendURL := fmt.Sprintf("%s?token=%s", h.frontendURL+"/auth/callback", jwtToken)
-	http.Redirect(w, r, frontendURL, http.StatusTemporaryRedirect)
+	// Mobile clients pass app_redirect; deliver token there.
+	// Web clients use the standard frontend callback page.
+	var dest string
+	if state.AppRedirect != "" {
+		dest = state.AppRedirect + "?token=" + jwtToken
+	} else {
+		dest = h.frontendURL + "/auth/callback?token=" + jwtToken
+	}
+	http.Redirect(w, r, dest, http.StatusTemporaryRedirect)
 }
 
 type googleUserInfo struct {
@@ -108,14 +159,11 @@ func fetchGoogleUser(accessToken string) (*googleUserInfo, error) {
 }
 
 func (h *Handler) upsertGoogleUser(ctx context.Context, g *googleUserInfo) (int64, error) {
-	// Return existing user if found
 	var id int64
-	err := h.db.QueryRowContext(ctx, `SELECT id FROM users WHERE email = $1`, g.Email).Scan(&id)
-	if err == nil {
+	if err := h.db.QueryRowContext(ctx, `SELECT id FROM users WHERE email = $1`, g.Email).Scan(&id); err == nil {
 		return id, nil
 	}
 
-	// First Google user gets admin role
 	var count int
 	h.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users`).Scan(&count)
 	role := "user"
@@ -124,16 +172,10 @@ func (h *Handler) upsertGoogleUser(ctx context.Context, g *googleUserInfo) (int6
 	}
 
 	patientID := fmt.Sprintf("#%04d", time.Now().UnixNano()%10000)
-	err = h.db.QueryRowContext(ctx, `
+	err := h.db.QueryRowContext(ctx, `
 		INSERT INTO users (name, email, password_hash, condition, patient_id, threshold, role)
 		VALUES ($1, $2, '', 'Asthma', $3, 75, $4)
 		RETURNING id
 	`, g.Name, g.Email, patientID, role).Scan(&id)
 	return id, err
-}
-
-func randomState() string {
-	b := make([]byte, 16)
-	rand.Read(b)
-	return base64.URLEncoding.EncodeToString(b)
 }

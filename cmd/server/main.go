@@ -16,7 +16,6 @@ import (
 	"github.com/chikenduhillary/ambiant-air-monitor-api/internal/db"
 	"github.com/chikenduhillary/ambiant-air-monitor-api/internal/handlers"
 	authmw "github.com/chikenduhillary/ambiant-air-monitor-api/internal/middleware"
-	"github.com/chikenduhillary/ambiant-air-monitor-api/internal/simulator"
 )
 
 func main() {
@@ -27,6 +26,7 @@ func main() {
 	addr         := envOr("ADDR", ":8080")
 	frontendURL  := envOr("FRONTEND_URL", "http://localhost:3000")
 	jwtSecret    := []byte(envOr("JWT_SECRET", "dev-secret-change-in-production"))
+	deviceAPIKey := os.Getenv("DEVICE_API_KEY")
 	googleCfg    := handlers.Config{
 		JWTSecret:          jwtSecret,
 		GoogleClientID:     os.Getenv("GOOGLE_CLIENT_ID"),
@@ -52,15 +52,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := db.Seed(database); err != nil {
-		slog.Error("failed to seed database", "error", err)
-		os.Exit(1)
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go simulator.New(database).Run(ctx)
-
 	r := chi.NewRouter()
 	r.Use(chimw.RequestID)
 	r.Use(chimw.RealIP)
@@ -74,6 +65,13 @@ func main() {
 
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Get("/health", h.Health)
+
+		// Field devices (e.g. the AAQPHM firmware) push readings here using
+		// a shared API key instead of a user JWT.
+		r.Group(func(r chi.Router) {
+			r.Use(authmw.DeviceAuth(deviceAPIKey))
+			r.Post("/devices/readings", h.IngestReadings)
+		})
 
 		r.Route("/auth", func(r chi.Router) {
 			r.Post("/register", h.Register)
@@ -168,7 +166,6 @@ func main() {
 	<-quit
 
 	slog.Info("graceful shutdown initiated")
-	cancel()
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
