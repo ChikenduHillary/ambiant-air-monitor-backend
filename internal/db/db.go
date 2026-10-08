@@ -86,6 +86,16 @@ func Migrate(db *sql.DB) error {
 		CREATE INDEX IF NOT EXISTS idx_devices_user_id        ON devices (user_id);
 		CREATE INDEX IF NOT EXISTS idx_sensor_readings_user_id ON sensor_readings (user_id);
 		CREATE INDEX IF NOT EXISTS idx_alerts_user_id          ON alerts (user_id);
+
+		-- Every table above is reachable through Supabase's own auto-generated
+		-- REST API (PostgREST), separate from this app, unless RLS is enabled.
+		-- This connection is the table owner, which always bypasses RLS, so
+		-- this has no effect on anything above — it only closes off PostgREST.
+		ALTER TABLE users           ENABLE ROW LEVEL SECURITY;
+		ALTER TABLE sensor_readings ENABLE ROW LEVEL SECURITY;
+		ALTER TABLE alerts          ENABLE ROW LEVEL SECURITY;
+		ALTER TABLE symptom_logs    ENABLE ROW LEVEL SECURITY;
+		ALTER TABLE devices         ENABLE ROW LEVEL SECURITY;
 	`)
 	return err
 }

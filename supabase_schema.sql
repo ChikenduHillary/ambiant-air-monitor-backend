@@ -69,3 +69,17 @@ CREATE INDEX IF NOT EXISTS idx_alerts_user_id           ON alerts (user_id);
 CREATE INDEX IF NOT EXISTS idx_symptom_logs_user_id     ON symptom_logs (user_id);
 CREATE INDEX IF NOT EXISTS idx_symptom_logs_created_at  ON symptom_logs (created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_devices_user_id          ON devices (user_id);
+
+-- ── Row Level Security ───────────────────────────────────────────────────────
+-- Every table here is reachable through Supabase's own auto-generated REST
+-- API (PostgREST), separate from this Go backend, unless RLS is enabled.
+-- The Go backend connects directly via DATABASE_URL as the table owner,
+-- which always bypasses RLS — so this has no effect on it. No policies are
+-- defined on purpose: nothing should reach these tables through PostgREST
+-- at all, so default-deny for anon/authenticated is exactly what's wanted.
+
+ALTER TABLE users          ENABLE ROW LEVEL SECURITY;
+ALTER TABLE sensor_readings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE alerts          ENABLE ROW LEVEL SECURITY;
+ALTER TABLE symptom_logs    ENABLE ROW LEVEL SECURITY;
+ALTER TABLE devices         ENABLE ROW LEVEL SECURITY;
